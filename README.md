@@ -1,4 +1,4 @@
-# pia-wig-netns
+# pia-wg-netns
 Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Linux netns namespaces
 
 #############################################################################
