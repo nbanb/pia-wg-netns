@@ -18,6 +18,7 @@ Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Li
 ##        - Traffic input in SOCKS5/HTTP out by PIA VPN of selected region
 ##        - SOCKS5 listening on namespace container IP:1080
 ##        - HTTP(S) listening on namespace container IP:3128
+##        - DNSMASQ listening on namespace container IP:53 (relay DNS request)
 ##        
 ##        - 9 predifined Region / update manually to select other regions
 ##        - To get a list of possible region, please run as root :      
