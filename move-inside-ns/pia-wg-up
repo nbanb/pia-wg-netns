@@ -1,0 +1,356 @@
+#!/bin/bash
+#############################################################################
+##
+##    20211127 : NBA / 14RV-NETWORK : CONNECT PIA VPN
+##
+##
+##        Connect PIA VPN to 9 differents pre-defined Regions :
+##
+##        - from the same Linux instance  
+##        - in différent network namespaces (netns)
+##        - using WireGuard to connect PIA (out by DMZ-ext v90)
+##          
+##        - EXPOSE VPN to local network (in by DMZ-int v80)
+##        - It is possible to ROUTE traffic through container IP 
+##        - using the SOCKSv5 & HTTP(S) proxy :  
+##        - Traffic input in SOCKS5/HTTP out by PIA VPN of selected region
+##        - SOCKS5 listening on namespace container IP:1080
+##        - HTTP(S) listening on namespace container IP:3128
+##        - DNSMASQ listening on namespace container IP:53 (relay DNS request)
+##        
+##        - 9 predifined Region / update manually to select other regions
+##        - To get a list of possible region, please run as root :	
+##        - ${PWD##*/}/lst-reg
+##        
+##        - 10 different possible connections in standard PIA paid contract 
+##        - Keeping 1 connection for testing or for direct use
+##        - on device like laptop, tab, phone ... 
+##        - If you need more free connection, do not connect the 9 
+##        - predifined regions, only connect 8 or 7 or less ..; 
+##        
+##    Scripts forked by NBA from "privateinternetaccess" git repository: 
+##    https://github.com/pia-foss/manual-connections.git    
+##
+##    SEE DISCLAMER FILE IN MAIN DIRECTOY     
+##
+#############################################################################
+
+# Main running file of the 'MOVE INSIDE NETNS CONTAINER IMPLEMENTATION'
+# Move 'pia' WireGuard interface from root container to pia-$region container
+
+
+# source variables & functions : var-and-functions-ns
+source ./var-and-functions-ns $1
+
+
+
+# starting - testuser - testparam - info - initvar  
+testuser
+testparam ${reg}
+intropia ${reg}
+srvloc
+initvar
+
+
+# test if namespace already exists, if yes, destroy it 
+
+NAMESPACE=`ip netns list | egrep $container`
+[[ -n "$NAMESPACE" ]] && echo -e "\nNamespace exist and must be removed :\n$NAMESPACES" && echo -e "\n${RED}Running ./pia-wg-down ${container} ${norm}" && ./pia-wg-down ${container}
+
+
+
+# create network namespace & ressources :
+# 
+# Our VM instance have 2 vlan network interfaces (physical intf voluntary not configured, 
+# interresting networks are vlan), one in DMZ-ext (default gateway) on v90
+# and one in DMZ-int (for local network access and exposing services to local network) on v80
+# We need to create differents interfaces in each vlans for each netns contenaires
+# To do this (impossible to have in the root namespace more than one interface of the same vlan)
+# we need to create IPVLAN L2 interfaces to affect them in our netns contenaires
+# Lots of people says to create a pair of VETH interfaces but it's more complicated and less suitable here.
+# The main container vlan interface will act as an L2 switch to give access to its vlan to the IPVLAN
+# container interface. At this part, it act as a MACVLAN interface in "bridge mode", but IPVLAN 
+# interfaces are easier to use and deploy in our use case.
+# You can find more details on the design / choice here : 
+# https://static.cinay.eu/htmldoc/Introduction%20aux%20interfaces%20Linux%20pour%20la%20mise%20en%20r%C3%A9seau%20virtuelle.html
+# https://www.kernel.org/doc/html/latest/networking/ipvlan.html
+# 
+
+# creating container : CONTAINER NAME : pia-$container
+# adding 2 interfaces in the container : 
+# pia-${container}80 on vlan 80 (DMZ int) 
+# pia-${container}90 on vlan 90 (DMZ ext)
+# configuring container default gateway on v90 gateway (outbound by DMZ-ext) 
+# adding fine routes for replying to local network (not DMZ) 
+# after sending default gw to the PIA WireGuard interface (not configure here) 
+
+echo -e "\n${blue}Creating container${norm} ${green}pia-${container}${norm} ${blue}:${norm}\n"
+echo -e "${purpl}
+ip netns add pia-$container
+ip netns list
+ip link add name pia-${container}80 link $IFv80 type $IFtype mode $IFmode
+ip link add name pia-${container}90 link $IFv80 type $IFtype mode $IFmode
+ip a |grep pia-$container
+ip link set dev pia-${container}80 netns pia-$container
+ip link set dev pia-${container}90 netns pia-$container
+ip netns exec pia-$container ip link set lo up
+ip netns exec pia-$container ip link
+ip netns exec pia-$container ip add add $IPv80/24 dev pia-${container}80
+ip netns exec pia-$container ip add add $IPv90/24 dev pia-${container}90
+ip netns exec pia-$container ip link set pia-${container}80 up
+ip netns exec pia-$container ip link set pia-${container}90 up
+ip netns exec pia-$container ip a |egrep \"pia-${container}80|pia-${container}90|$IPv80|$IPv90\"
+ip netns exec pia-$container ip route add default via $GWv90 dev pia-${container}90
+ip netns exec pia-$container ip route show
+${norm}"
+
+# NBA test
+#
+# macvlan bridge
+# (need macvlan to use this container as a PIA router, less performant)
+# testing macvlan bridge mode (very similar than ipvlan l2 bridge) but
+# each interface (pia-${container}80, ...) have it's own MAC address
+# macvlan cannot be attached to a vlan interface (ipvlan can) 
+# so trying to attach it to physical interface
+# but we don't want to attach to a physical interface (due to broadcast 
+# on internet exposed subnet = getting ARP of 192.168.100.0/24 + public ipv6)
+# ip link add pia-${container}80 link enp0s3 type macvlan mode bridge 
+# ip link add pia-${container}90 link enp0s3 type macvlan mode bridge
+#
+# testing ipvlan l3 bridge : do not suite our need :
+# ip link add name pia-${container}80 link $IFv80 type ipvlan mode l3 bridge 
+# ip link add name pia-${container}90 link $IFv90 type ipvlan mode l3 bridge
+#
+# testing ipvlan l2 bridge :  OK !
+# suites our need but $IFv80 and pia-${container}80 will get the same MAC address 
+# as $IFv80 has, idem for pia-${container}90 :
+# 'bridge' is default ipvlan l2 setting, can be ommit 
+# ip link add name pia-${container}80 link $IFv80 type ipvlan mode l2 bridge 
+# ip link add name pia-${container}90 link $IFv90 type ipvlan mode l2 bridge
+#
+# NBA /test
+
+ip netns add pia-$container
+ip netns list
+ip link add name pia-${container}80 link $IFv80 type $IFtype mode $IFmode
+ip link add name pia-${container}90 link $IFv90 type $IFtype mode $IFmode
+ip a |grep pia-$container
+ip link set dev pia-${container}80 netns pia-$container
+ip link set dev pia-${container}90 netns pia-$container
+ip netns exec pia-$container ip link set lo up
+ip netns exec pia-$container ip link
+ip netns exec pia-$container ip add add $IPv80/24 dev pia-${container}80
+ip netns exec pia-$container ip add add $IPv90/24 dev pia-${container}90
+ip netns exec pia-$container ip link set pia-${container}80 up
+ip netns exec pia-$container ip link set pia-${container}90 up
+ip netns exec pia-$container ip a |egrep "pia-${container}80|pia-${container}90|$IPv80|$IPv90"
+ip netns exec pia-$container ip route add default via $GWv90 dev pia-${container}90
+ip netns exec pia-$container ip route show
+
+
+# Special case of 'macvlan'  
+if [[ "$IFtype" == "macvlan" ]] ; then 
+echo -e "\n${blue}Adding special kernel param & routes for 'macvlan' interface type in${norm} ${green}pia-${container}${norm} ${blue}:${norm}\n"
+echo -e "${purpl}
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.forwarding=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.arp_notify=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.arp_announce=2
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.forwarding=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.arp_notify=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.arp_announce=2
+ip route add $IPv80/32 dev $IFv80
+ip route add $IPv90/32 dev $IFv90
+${norm}"
+echo -e "\n${red}For this work, physical interface IFphy=$IFphy must be in PROMISCUOUS mode !${norm}" 
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.forwarding=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.arp_notify=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}80.arp_announce=2
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.forwarding=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.arp_notify=1
+ip netns exec pia-${container} sysctl -w net.ipv4.conf.pia-${container}90.arp_announce=2
+ip route add $IPv80/32 dev $IFv80
+ip route add $IPv90/32 dev $IFv90
+fi
+# End case of 'macvlan'
+
+
+echo -e "\nNamespace pia-$container created with interfaces : 
+${blue}pia-${container}80${norm} IP = ${blue}${IPv80}${norm}
+${blue}pia-${container}90${norm} IP = ${blue}${IPv90}${norm}  default GW = ${purpl}${GWv90}${norm}\n"
+
+
+echo -e "\nCreating pia-$container specific namespaces files 
+${purpl}\nIn order to resolv WireGuard endpoint, we will first
+settings DNS to local DNS of DMZ zone in pia-${container} 
+
+Tinyproxy also need configurations files, we put them in too
+And also installing logrotate files
+
+${blue}mkdir -p /etc/netns/pia-${container} 
+echo \"nameserver $DNSv90\" >/etc/netns/pia-${container}/resolv.conf
+echo \"nameserver $DNSv80\" >>/etc/netns/pia-${container}/resolv.conf
+echo pia-${container}.14rv.lan >/etc/netns/pia-${container}/hostname
+mkdir -p /etc/tinyproxy
+mkdir -p /etc/netns/pia-${container}/tinyproxy
+mkdir -p /etc/netns/pia-${container}/tinyproxy/pia-${container}
+mkdir -p /var/log/tinyproxy
+mkdir -p /var/run/tinyproxy
+cp files/tinyproxy-pia-nb.conf /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+sed -i \"s/pia-nb/pia-${container}/g\" /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+sed -i \"s/Listen 0.0.0.0/Listen $IPv80/g\" /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+touch /var/run/tinyproxy/tinyproxy-pia-${container}.pid
+touch /var/log/tinyproxy/tinyproxy-pia-${container}.log
+chown -R nobody:nogroup /var/run/tinyproxy
+chown -R nobody:nogroup /var/log/tinyproxy
+cp files/*.html /etc/netns/pia-${container}/tinyproxy/pia-${container}
+cp files/logrotate-tiny /etc/logrotate.d/logrotate-tiny-pia-${container}
+sed -i \"s/pia-nb/pia-${container}/g\" /etc/logrotate.d/logrotate-tiny-pia-${container} 
+${norm}"
+mkdir -p /etc/netns/pia-${container}
+echo "nameserver $DNSv90">/etc/netns/pia-${container}/resolv.conf
+echo "nameserver $DNSv80" >>/etc/netns/pia-${container}/resolv.conf
+echo pia-${container}.14rv.lan >/etc/netns/pia-${container}/hostname
+mkdir -p /etc/tinyproxy
+mkdir -p /etc/netns/pia-${container}/tinyproxy
+mkdir -p /etc/netns/pia-${container}/tinyproxy/pia-${container}
+mkdir -p /var/log/tinyproxy
+mkdir -p /var/run/tinyproxy
+cp files/tinyproxy-pia-nb.conf /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+sed -i "s/pia-nb/pia-${container}/g" /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+sed -i "s/Listen 0.0.0.0/Listen $IPv80/g" /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+touch /var/run/tinyproxy/tinyproxy-pia-${container}.pid
+touch /var/log/tinyproxy/tinyproxy-pia-${container}.log
+chown -R nobody:nogroup /var/run/tinyproxy
+chown -R nobody:nogroup /var/log/tinyproxy
+cp files/*.html /etc/netns/pia-${container}/tinyproxy/pia-${container}
+cp files/logrotate-tiny /etc/logrotate.d/logrotate-tiny-pia-${container}
+sed -i "s/pia-nb/pia-${container}/g" /etc/logrotate.d/logrotate-tiny-pia-${container} 
+echo -e "\nSpecific configuration had been done for pia-${container}
+[ ${green}OK !${norm} ]"
+
+
+echo -e "\nRunning PIA connection in the root container and move interface to the pia-$container...\n"
+
+echo -e "\n${red}Disable IPv6 in pia-${container}:
+
+Script 'run-pia-ns' will disable IPv6 of the root namespace, not in pia-${container}
+So we proceed now !
+${norm}
+Running : 
+ip netns exec pia-${container} sysctl -w net.ipv6.conf.all.disable_ipv6=1
+ip netns exec pia-${container} sysctl -w net.ipv6.conf.default.disable_ipv6=1
+"
+ip netns exec pia-${container} sysctl -w net.ipv6.conf.all.disable_ipv6=1
+ip netns exec pia-${container} sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
+echo -e "\n[ ${green}OK !${norm} ]"
+
+echo -e "\nFollowing scripts will be chained: 
+${blue}${0/`basename $0`/}/pia-wg-up${norm}
+${blue}${0/`basename $0`/}/pia-wg-down${norm} if pia-${container} exist
+${blue}${0/`basename $0`/}/run-pia-ns${norm}
+${blue}${0/`basename $0`/}/get_region-ns${norm}
+${blue}${0/`basename $0`/}/connect_to_wireguard_with_token-ns${norm}\n"
+
+echo -e "\nFollowing scripts will be called: 
+${blue}${0/`basename $0`/}/get_token.sh${norm}\n"
+
+echo -e "\nFollowing files will be used : 
+${blue}${0/`basename $0`/}/ca.rsa.4096.crt${norm}\n"
+
+echo -e "\nOptional scripts (chained) to find regions : 
+${blue}${0/`basename $0`/}/lst-reg${norm}
+${blue}${0/`basename $0`/}/list_region${norm}\n"
+
+echo -e "\nWireGuard configuration, \"pia\" Wireguard interface, 
+are done and moved to the pia-$container in script :
+${red}${0/`basename $0`/}/connect_to_wireguard_with_token-ns${norm}\n"
+
+echo -e "Force removing symlink to /etc/wireguard/pia.conf\n"
+rm -f /etc/wireguard/pia.conf
+
+# run 
+
+# launch as root, don't need sudo ... and also don't need following DNS servers
+#$SUDO  IFv80=$IFv80 \
+#       DNSdmz80=$DNSdmz80 \
+#       DNSdmz90=$DNSdmz90 \
+#       DNSpia01=$DNSpia01 \
+#       DNSpia04=$DNSpia04 \
+
+#ip netns exec pia-${container} bash -c " \
+	bash -c " \
+	IFtype=$IFtype \
+	IFmode=$IFmode \
+	IFv80=$IFv80 \
+	IFv90=$IFv90 \
+	GWv80=$GWv80 \
+	GWv90=$GWv90 \
+	v20=$v20 \
+	v30=$v30 \
+	v80=$v80 \
+	v90=$v90 \
+	v110=$v110 \
+	IPv80=$IPv80 \
+	IPv90=$IPv90 \
+        DNSpia02=$DNSpia02 \
+        DNSpia03=$DNSpia03 \
+        DNSdmz80=$DNSdmz80 \
+        TLDlocal=$TLDlocal \
+	container=${container} \
+	region=${region} \
+	WGRT=$WGRT \
+	MTU=$MTU \
+	VPN_PROTOCOL=${VPN_PROTOCOL} \
+	DISABLE_IPV6=${DISABLE_IPV6} \
+	AUTOCONNECT=${AUTOCONNECT} \
+	PIA_PF=${PIA_PF} \
+	PIA_USER=${PIA_USER} \
+	PIA_PASS=${PIA_PASS} \
+	MAX_LATENCY=${MAX_LATENCY} \
+	PREFERRED_REGION=${region} \
+	${0/`basename $0`/}/run-pia-ns"
+
+
+
+# Testing if all OK / exit on failure
+
+testpia="ip netns exec pia-${container} ip addr show pia"
+$(echo $testpia) 2>&1>/dev/null
+ret="$?"
+result=$(echo $testpia)
+[[ "$ret" -ne "0" ]] && echo -e "\n[ ${RED}FAILED !${norm} ]${red} WireGuard network interface 'pia' does not exist, NOT running WireGuard ... exit !\n" && exit 30 || echo -e "\n[ ${GREEN}OK !${norm} ]${blue} WireGuard network interface 'pia' exist, WireGuard running... Continue !${NC}\n\n${green}INTERFACE 'pia' CONFIGURATION: \n\n${result}\n${norm}";
+$(echo $testpia)
+
+
+# Configuring DNS to PIA DNS server
+
+echo -e "\n${purpl}In order to avoid DNS data leak, we set DNS to PIA VPN 
+private DNS server ($DNSpia01-4, prefer $DNSpia02) in pia-${container}
+
+${blue}echo \"nameserver $DNSpia02\" >/etc/netns/pia-${container}/resolv.conf
+echo \"nameserver $DNSpia03\" >>/etc/netns/pia-${container}/resolv.conf
+
+${norm}[ ${GREEN}OK !${norm} ]
+
+${purpl}We also start 'dnsmasq' to be able to use the container IP as a DNS server
+relayinq queries to PIA DNS server of connected region. 
+
+Local domains are resolved by local DNS server provide by vlan80's gateway 
+
+${blue}ip netns exec pia-${container} /usr/sbin/dnsmasq --listen-address=$IPv80 --interface=pia-${container}80 --bind-interfaces --cache-size=0 --resolv-file=/etc/netns/pia-${container}/resolv.conf --server=/.${TLDlocal}/${DNSdmz80}
+
+${norm}[ ${GREEN}OK !${norm} ]${green}  ALL OK ... ENJOY !\n${norm}"
+echo "nameserver $DNSpia02" >/etc/netns/pia-${container}/resolv.conf
+echo "nameserver $DNSpia03" >>/etc/netns/pia-${container}/resolv.conf
+
+# NBA : next line run here because dnsmasq cannot be launched by WireGuard in this implementation
+ip netns exec pia-${container} /usr/sbin/dnsmasq --listen-address=$IPv80 --interface=pia-${container}80 --bind-interfaces --cache-size=0 --resolv-file=/etc/netns/pia-${container}/resolv.conf --server=/.${TLDlocal}/${DNSdmz80}
+
+
+
+
+
+
+
+

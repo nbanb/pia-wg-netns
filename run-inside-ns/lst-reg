@@ -1,0 +1,51 @@
+#!/bin/bash
+#############################################################################
+##
+##    20211127 : NBA / 14RV-NETWORK : CONNECT PIA VPN - FIND SERVER
+##
+##
+##        Search PIA VPN servers and get a list sorted by latency
+##
+##        - show a list of all PIA WireGuard VPN endpoints
+##        - with latency less than 0.5s (param to change in script).
+##        - show PIA server codename to use in pia-wg-up script
+##        - to configure particular region, update pia-wg-up script
+##        - with PIA endpoint server codename
+##
+##    SEE DISCLAMER FILE IN MAIN DIRECTOY     
+##
+#############################################################################
+
+
+
+export PATH=$PATH:.
+
+
+# variables script
+
+red='\033[31m'
+RED='\033[01;31m'
+blue='\033[34m'
+GREEN='\033[01;32m'
+green='\033[32m'
+purpl='\033[35m'
+norm='\033[00m'
+
+
+echo -e "\n${green}Find new server location to connect PrivateInternetAccess VPN endpoints.${norm}
+
+${blue}This script provides PIA WireGuard server list worldwide, sorted by latency.
+It also provides server codename in order to update pia-wg-up script
+with different or new region / server.${norm}\n"
+
+
+
+sudo \
+	VPN_PROTOCOL=wireguard \
+	DISABLE_IPV6="yes" \
+	PIA_PF=false \
+	MAX_LATENCY=0.5 \
+	AUTOCONNECT=false \
+	PIA_USER=p0123456 \
+	PIA_PASS=pXXXXXXX \
+       	./list_region

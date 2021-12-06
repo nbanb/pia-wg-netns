@@ -1,0 +1,17 @@
+#!/bin/bash
+
+red='\033[01;31m'
+RED='\033[31m'
+blue='\033[34m'
+green='\033[32m'
+purpl='\033[35m'
+norm='\033[00m'
+
+
+ip netns list |cut -d' ' -f1| while read ns; 
+				do 
+				echo -e "\n$ns : ${green}$(ip netns exec $ns /root/whatismyip)${norm}" 
+				ip netns exec $ns ip a |egrep --color=auto 'pia$|10.0..0.......'
+				ip netns exec $ns ss -nlt |egrep --color=auto 'LISTEN|10.0..0.........'
+				echo  
+			      done

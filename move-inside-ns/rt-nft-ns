@@ -1,0 +1,187 @@
+#!/bin/bash
+#############################################################################
+##
+##    20211128 : NBA / 14RV-NETWORK : CONNECT PIA VPN
+##
+##
+##        NBA PIA VPN implementation in netns container for dual DMZ
+##
+##        ############## WARNING ###############  
+##        DO NOT WORK WITH IPVLAN L2 INTERFACES
+##        L2 NOT ROUTABLE AND L3 NOT SUITE OUR
+##        NEED FOR PIA VPN NAMESPACES CONTAINER
+##        ROUTING WORK WITH MACVLAN INTERFACES
+##        ############## WARNING ###############  
+##
+##     
+##        - nftables rules set to allow each netns container  
+##        - to route traffic recieved on DMZ-int (v80 interface)
+##        - to PIA VPN interface (region) in each pia-\${container} 
+##     
+##        - Each container has 3 interface : 
+##        - pia-\${container}80  --> DMZ-int (vlan 80) for local traffic   
+##        - pia-\${container}90  --> DMZ-ext (vlan 90) for external traffic   
+##        - pia  --> WireGuard VPN interface connected to PIA specific region   
+##
+##        - We route traffic from local network (pia-\${container}80)  
+##        - through 'pia' WireGuard network interface connected to 
+##        - PrivateInternetAccess services (PIA) 
+##
+##        - nftables firewall rules are also applied
+##
+##        ############## WARNING ###############  
+##        DO NOT WORK WITH IPVLAN L2 INTERFACES
+##        L2 NOT ROUTABLE AND L3 NOT SUITE OUR
+##        NEED FOR PIA VPN NAMESPACES CONTAINER
+##        ROUTING WORK WITH MACVLAN INTERFACES
+##        ############## WARNING ###############  
+##
+##
+##    Scripts forked by NBA from "privateinternetaccess" git repository: 
+##    https://github.com/pia-foss/manual-connections.git    
+##
+##    SEE DISCLAMER FILE IN MAIN DIRECTOY     
+##
+#############################################################################
+
+
+# Firewall & ruting rules file
+
+# WARNING : TO BE RUN IN EACH pia-\${container} WITH 
+# ip netns exec pia-\${container} 'nftables routing rules ...'
+
+
+# source variables & functions : var-and-functions-ns
+source ./var-and-functions-ns $1
+
+
+
+# starting - testuser - testparam - info - initvar  
+testuser
+testparam ${reg}
+
+
+
+# activating forwarding 
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# init container
+container=$1
+echo -e "\nThis script will apply firewall & routing rules to container : 
+
+	${GREEN}pia-${container}${norm}
+
+
+${red}Note that the container${norm} ${GREEN}pia-${container}${norm} ${red}will be able to act as a router !${norm}
+
+Traffic arriving on DMZ-int (v80) will be route through the container
+to the PIA VPN connected region in the container
+
+Following networks are allowed to use this pia-${container} as a router
+and will be nated to outbound at PIA WireGuard endpoint :
+${purpl}
+v20 = 10.0.20.0/24
+v30 = 10.0.30.0/24
+v80 = 10.0.80.0/24
+v90 = 10.0.90.0/24
+v110 = 10.0.110.0/24
+${norm}
+
+Following firewall and routing rules will be applied :\n
+"
+
+# overwriting variables values to write the file table
+IFv80="pia-${container}80"
+IFv90="pia-${container}90"
+IFpia="pia"
+
+
+
+# writing nftables rules set
+
+TB_RT_CTNR_NFTABLE=" 
+#not flushing ruleset to keep WireGuard nftables rules
+#flush ruleset
+
+define IFv80 = pia-${container}80
+define IFv90 = pia-${container}90
+define IFpia = pia
+define v20 = $v20
+define v30 = $v30
+define v80 = $v80
+define v90 = $v90
+define v110 = $v110
+
+
+table ip global {
+    chain inbound_world {
+        # allow ping from external
+        icmp type echo-request limit rate 5/second accept
+        # allow SSH from v90 network on DMZ-ext or pia
+        ip saddr $v90 tcp dport 22 accept
+    }
+    chain inbound_private {
+        # allow ping from internal network
+        icmp type echo-request limit rate 5/second accept
+	# allow SSH, SOCKSv5, HTTP(S) proxy and DNS requests to access the container from private network
+        ip protocol . th dport vmap { tcp . 22 : accept , tcp . 3128 : accept , tcp . 1080 : accept , udp . 53 : accept , icmp : accept }
+    }
+    chain inbound {
+        type filter hook input priority 0; policy drop;
+        # Allow traffic from established and related packets, drop invalid
+        ct state vmap { established : accept, related : accept, invalid : drop }
+
+        # allow loopback traffic, anything else jump to chain for further evaluation
+        iifname vmap { 
+		lo : accept, 
+		$IFpia : jump inbound_world, 
+		$IFv90 : jump inbound_world, 
+		$IFv80 : jump inbound_private
+		}
+        # the rest is dropped by the above policy
+    }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        # Allow traffic from established and related packets, drop invalid
+        ct state vmap { established : accept, related : accept, invalid : drop }
+
+        # connections from the internal net to the internet: vXX to vYY not allowed
+	# routing traffic from DMZ-int v80 to PIA
+	# not routing DMZ-ext v90 to PIA (traffic comes from @ on v90)	
+        meta iifname . meta oifname {
+		$IFv80 . $IFpia, 
+		$IFpia . $IFv80
+		} accept
+        # the rest is dropped by the above policy
+    }
+    chain prerouting {
+        type nat hook prerouting priority 0; policy accept;
+    }
+
+
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        #oifname $IFpia masquerade
+        # masquerade private IP addresses for all allowed networks
+        ip saddr $v20 counter oifname $IFpia counter masquerade
+        ip saddr $v30 counter oifname $IFpia counter masquerade
+        ip saddr $v80 counter oifname $IFpia counter masquerade
+        ip saddr $v110 counter oifname $IFpia counter masquerade
+    }
+}
+"
+
+echo -e "$TB_RT_CTNR_NFTABLE" >cnt-nft-ruleset || exit 29
+
+
+echo
+echo -e "${blue}$(cat cnt-nft-ruleset)${norm}"
+echo
+# executing rules in container : 
+ip netns exec pia-${container} nft -f ./cnt-nft-ruleset
+rm -f ./cnt-nft-ruleset
+
+
+
+echo -e "\n[ ${GREEN}OK !${norm} ] ${red}Note that the container${norm} ${green}pia-${container}${norm} ${red}can now act as a router !\n${norm}"
+

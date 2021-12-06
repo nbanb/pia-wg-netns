@@ -1,0 +1,398 @@
+#!/bin/bash
+# Copyright (C) 2020 Private Internet Access, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#############################################################################
+##
+##    20211127 : NBA / 14RV-NETWORK : CONNECT PIA VPN
+##
+##
+##        Connect PIA VPN to 9 differents pre-defined Regions 
+##
+##        - from the same Linux instance  
+##        - in différent network namespaces (netns)
+##        - using WireGuard to connect PIA (out by DMZ-ext v90)
+##          
+##        - EXPOSE VPN to local network (in by DMZ-int v80)
+##        - It is possible to ROUTE traffic through container IP 
+##        - using the SOCKSv5 & HTTP(S) proxy :  
+##        - Traffic input in SOCKS5/HTTP out by PIA VPN of selected region
+##        - SOCKS5 listening on namespace container IP:1080
+##        - HTTP(S) listening on namespace container IP:3128
+##        - DNSMASQ listening on namespace container IP:53 (relay DNS request)
+##        
+##    Scripts forked by NBA from "privateinternetaccess" git repository: 
+##    https://github.com/pia-foss/manual-connections.git    
+##
+##
+#############################################################################
+
+
+
+
+
+# This function allows you to check if the required tools have been installed.
+function check_tool() {
+  cmd=$1
+  if ! command -v $cmd &>/dev/null
+  then
+    echo "$cmd could not be found"
+    echo "Please install $cmd"
+    exit 1
+  fi
+}
+# Now we call the function to make sure we can use wg-quick, curl and jq.
+check_tool wg-quick
+check_tool curl
+check_tool jq
+
+# Check if terminal allows output, if yes, define colors for output
+if test -t 1; then
+  ncolors=$(tput colors)
+  if test -n "$ncolors" && test $ncolors -ge 8; then
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    NC='\033[0m' # No Color
+  else
+    GREEN=''
+    RED=''
+    NC='' # No Color
+  fi
+fi
+
+# PIA currently does not support IPv6. In order to be sure your VPN
+# connection does not leak, it is best to disabled IPv6 altogether.
+# IPv6 can also be disabled via kernel commandline param, so we must
+# first check if this is the case.
+if [[ -f /proc/net/if_inet6 ]] &&
+  [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) -ne 1 ||
+     $(sysctl -n net.ipv6.conf.default.disable_ipv6) -ne 1 ]]
+then
+  echo 'You should consider disabling IPv6 by running:'
+  echo 'sysctl -w net.ipv6.conf.all.disable_ipv6=1'
+  echo 'sysctl -w net.ipv6.conf.default.disable_ipv6=1'
+fi
+
+# Check if the mandatory environment variables are set.
+if [[ ! $WG_SERVER_IP || ! $WG_HOSTNAME || ! $PIA_TOKEN ]]; then
+  echo -e ${RED}This script requires 3 env vars:
+  echo WG_SERVER_IP - IP that you want to connect to
+  echo WG_HOSTNAME  - name of the server, required for ssl
+  echo PIA_TOKEN    - your authentication token
+  echo
+  echo You can also specify optional env vars:
+  echo "PIA_PF                - enable port forwarding"
+  echo "PAYLOAD_AND_SIGNATURE - In case you already have a port."
+  echo
+  echo An easy solution is to just run get_region_and_token.sh
+  echo as it will guide you through getting the best server and
+  echo also a token. Detailed information can be found here:
+  echo -e https://github.com/pia-foss/manual-connections${NC}
+  exit 1
+fi
+
+# Create ephemeral wireguard keys, that we don't need to save to disk.
+privKey="$(wg genkey)"
+export privKey
+pubKey="$( echo "$privKey" | wg pubkey)"
+export pubKey
+
+# Authenticate via the PIA WireGuard RESTful API.
+# This will return a JSON with data required for authentication.
+# The certificate is required to verify the identity of the VPN server.
+# In case you didn't clone the entire repo, get the certificate from:
+# https://github.com/pia-foss/manual-connections/blob/master/ca.rsa.4096.crt
+# In case you want to troubleshoot the script, replace -s with -v.
+echo Trying to connect to the PIA WireGuard API on $WG_SERVER_IP...
+wireguard_json="$(curl -s -G \
+  --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
+  --cacert "ca.rsa.4096.crt" \
+  --data-urlencode "pt=${PIA_TOKEN}" \
+  --data-urlencode "pubkey=$pubKey" \
+  "https://${WG_HOSTNAME}:1337/addKey" )"
+export wireguard_json
+
+# Check if the API returned OK and stop this script if it didn't.
+if [ "$(echo "$wireguard_json" | jq -r '.status')" != "OK" ]; then
+  >&2 echo -e "${RED}Server did not return OK. Stopping now.${NC}"
+  exit 1
+fi
+
+# Multi-hop is out of the scope of this repo, but you should be able to
+# get multi-hop running with both WireGuard and OpenVPN by playing with
+# these scripts. Feel free to fork the project and test it out.
+echo
+echo Trying to disable a PIA WG connection in case it exists...
+wg-quick down pia && echo -e "${GREEN}\nPIA WG connection disabled!${NC}"
+echo
+
+# Create the WireGuard config based on the JSON received from the API
+# In case you want this section to also add the DNS setting, please
+# start the script with PIA_DNS=true.
+# This uses a PersistentKeepalive of 25 seconds to keep the NAT active
+# on firewalls. You can remove that line if your network does not
+# require it.
+if [ "$PIA_DNS" == true ]; then
+  dnsServer="$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
+  echo Trying to set up DNS to $dnsServer. In case you do not have resolvconf,
+  echo this operation will fail and you will not get a VPN. If you have issues,
+  echo start this script without PIA_DNS.
+  echo
+  dnsSettingForVPN="DNS = $dnsServer"
+fi
+echo -e "Trying to write /etc/wireguard/pia_${container}.conf ..."
+mkdir -p /etc/wireguard
+# 20211127 : NBA ADD : 
+echo -e "\nContainer / Network specific parameters :
+
+	IFtype=$IFtype 
+        IFmode=$IFmode 
+	IFv80=$IFv80 
+        IFv90=$IFv90 
+        GWv80=$GWv80 
+        GWv90=$GWv90 
+        v20=$v20 
+        v30=$v30 
+        v80=$v80 
+        v90=$v90 
+        v110=$v110
+	IPv80=$IPv80 
+        IPv90=$IPv90 
+        DNSpia02=$DNSpia02 
+        DNSpia03=$DNSpia03
+        DNSdmz80=$DNSdmz80
+	TLDlocal=$TLDlocal	
+	container=$container 
+        region=$region 
+        WGRT=$WGRT
+        MTU=$MTU 
+        VPN_PROTOCOL=${VPN_PROTOCOL}
+        DISABLE_IPV6=${DISABLE_IPV6}
+        AUTOCONNECT=${AUTOCONNECT}
+        PIA_PF=${PIA_PF}
+	PIA_USER=${PIA_USER}
+        PIA_PASS=xxxxxxxx
+	MAX_LATENCY=${MAX_LATENCY}
+        PREFERRED_REGION=${region}
+	"
+	
+#echo -e "\n## DEBUG ## WireGuardRouteTable=$WGRT\n"
+
+# NBA : exit if $container empty :
+[[ ! "${container}" ]] && echo -e "\n${RED}Container VARIABLE '\$container' is empty, NOT running WireGuard ... exit !${NC}\n" && exit 28 ;
+
+echo "
+[Interface]
+Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
+PrivateKey = $privKey
+$dnsSettingForVPN
+# NBA : Customisation to make this network container a PIA WireGuard Socks Bridge
+# NBA : Add specific route after UP the wireguard interface in pia-${container}
+#
+# NBA : Route back traffic to lan (for main container table 51820) 
+#PostUp = ip -4 route add $v20 via $GWv90 table $WGRT
+#
+# NBA : Standard route for lan & wlan in container pia-${container} (WireGuard table $WGRT)  
+# NBA : Default gateway is on v90 (DMZ-ext) => Not routing back local network by DMZ-ext=v90 
+#PostUp = ip -4 netns exec pia-${container} ip route add $v20 via $GWv90 dev pia-${container}90 table $WGRT
+#PostUp = ip -4 netns exec pia-${container} ip route add $v30 via $GWv90 dev pia-${container}90 table $WGRT
+#PostUp = ip -4 netns exec pia-${container} ip route add $v110 via $GWv90 dev pia-${container}90 table $WGRT
+# NBA : routing back lan, wlan & vpn traffic to v80: local access to DMZ is by DMZ-int=v80 
+PostUp = ip -4 netns exec pia-${container} ip route add $v20 via $GWv80 dev pia-${container}80 table $WGRT
+PostUp = ip -4 netns exec pia-${container} ip route add $v30 via $GWv80 dev pia-${container}80 table $WGRT
+PostUp = ip -4 netns exec pia-${container} ip route add $v110 via $GWv80 dev pia-${container}80 table $WGRT
+# NBA: v80 & v90 link routes 
+PostUp = ip -4 netns exec pia-${container} ip route add $v80 dev pia-${container}80 table $WGRT
+PostUp = ip -4 netns exec pia-${container} ip route add $v90 dev pia-${container}90 table $WGRT
+#
+# NBA : Launch microsocks instance to access this PIA WireGuard Socks Bridge
+#PostUp = ip -4 netns exec pia-${container} microsocks -1 -i $IPv80 -p 1080 -u pia -P @n0n1m0us &
+PostUp = ip -4 netns exec pia-${container} microsocks -i $IPv80 -p 1080 &
+# NBA : Launch tinyproxy instance to access this PIA WireGuard Bridge
+PostUp = ip -4 netns exec pia-${container} tinyproxy -c /etc/netns/pia-${container}/tinyproxy/tinyproxy-pia-${container}.conf
+# NBA : Launch dnsmasq instance to use this container as a DNS server (relayed to PIA DNS servers)
+PostUp = ip -4 netns exec pia-${container} /usr/sbin/dnsmasq --listen-address=$IPv80 --interface=pia-${container}80 --bind-interfaces --cache-size=0 --resolv-file=/etc/netns/pia-${container}/resolv.conf --server=/.${TLDlocal}/${DNSdmz80}
+#
+# NBA : Del specific route after UP the wireguard interface
+# NBA : Default gateway is on v90 (DMZ-ext) => Not routing back local network by DMZ-ext=v90 
+#PostDown = ip -4 netns exec pia-${container} ip route del $v20 via $GWv90 dev pia-${container}90 table $WGRT
+#PostDown = ip -4 netns exec pia-${container} ip route del $v30 via $GWv90 dev pia-${container}90 table $WGRT
+#PostDown = ip -4 netns exec pia-${container} ip route del $v110 via $GWv90 dev pia-${container}90 table $WGRT
+# NBA : routing back lan, wlan & vpn traffic to v80: local access to DMZ is by DMZ-int=v80 
+PostDown = ip -4 netns exec pia-${container} ip route del $v20 via $GWv80 dev pia-${container}80 table $WGRT
+PostDown = ip -4 netns exec pia-${container} ip route del $v30 via $GWv80 dev pia-${container}80 table $WGRT
+PostDown = ip -4 netns exec pia-${container} ip route del $v110 via $GWv80 dev pia-${container}80 table $WGRT
+# NBA: v80 & v90 link routes 
+PostDown = ip -4 netns exec pia-${container} ip route del $v80 dev pia-${container}80 table $WGRT
+PostDown = ip -4 netns exec pia-${container} ip route del $v90 dev pia-${container}90 table $WGRT
+# NBA : temporary route to v20 
+#PostDown = ip -4 route del $v20 via $GWv90 table $WGRT
+#
+# NBA : Kill microsocks instance launched to access this PIA WireGuard bridge
+# NBA : Commented, better to kill the right PID / better to use pia-wg-down script 
+#PostDown = ip -4 netns exec pia-${container} /usr/bin/pkill microsocks
+#
+# NBA : End customisation
+#
+[Peer]
+PersistentKeepalive = 25
+PublicKey = $(echo "$wireguard_json" | jq -r '.server_key')
+AllowedIPs = 0.0.0.0/0
+Endpoint = ${WG_SERVER_IP}:$(echo "$wireguard_json" | jq -r '.server_port')
+" > /etc/wireguard/pia_${container}.conf || exit 1
+# NBA add link to use "wg-quick up pia" command
+ln -s /etc/wireguard/pia_${container}.conf /etc/wireguard/pia.conf
+
+echo -e "\n/etc/wireguard/pia_${container}.conf contains container & SOCKS information
+cat /etc/wireguard/pia_${container}.conf"
+
+cat /etc/wireguard/pia_${container}.conf
+
+
+
+echo -e ${GREEN}OK!${NC}
+
+# Start the WireGuard interface.
+# If something failed, stop this script.
+# If you get DNS errors because you miss some packages,
+# just hardcode /etc/resolv.conf to "nameserver 10.0.0.242".
+# PIA DNS local server : 10.0.0.241, 10.0.0.242, 10.0.0.243 and 10.0.0.244
+echo
+echo Trying to create the wireguard interface...
+wg-quick up pia || exit 1
+echo
+echo -e "${GREEN}The WireGuard interface got created.${NC}
+
+The "pia" WireGuard network interface had been directly created in our pia-$container container
+At this point, internet should work via VPN.
+"
+
+# NBA COMMENTED : RUNNING DIRECTLY PIA IN pia-${container} CONTAINER :
+# wg-quick will apply rules based using pia-${container} as source namespace
+# so, we do not need to move the 'pia' WireGuard interface to the pia-${container} namespace
+# and we do not need to reconfigure it and to reonfigure fwmark and specific routing
+# so next lines are commented
+## NBA ADD :
+#
+#
+#
+#echo -e "\nRunning :
+#IP_PIA=$(ip a |grep pia$ |grep 'inet 10.' |cut -d' ' -f6)"
+#
+#IP_PIA=$(ip a |grep pia$ |grep 'inet 10.' |cut -d' ' -f6)
+#
+#
+#echo -e "\nMoving \"pia\" WireGuard interface to pia-${container} container :
+#ip link set pia netns pia-${container}"
+#
+#ip link set pia netns pia-${container}
+#
+#
+#echo -e "\nReconfiguring \"pia\" WireGuard interface in pia-${container} with previous values :
+#ip netns exec pia-${container} ip link set pia down
+#ip netns exec pia-${container} ip -4 address add $IP_PIA dev pia
+#ip netns exec pia-${container} ip -4 link set mtu $MTU up dev pia
+#ip netns exec pia-${container} ip link set pia up"
+#
+#ip netns exec pia-${container} ip link set pia down
+#ip netns exec pia-${container} ip -4 address add $IP_PIA dev pia
+#ip netns exec pia-${container} ip -4 link set mtu $MTU up dev pia
+#ip netns exec pia-${container} ip link set pia up
+#
+#
+#echo -e "\nConfig / State of container pia-${container} :
+#ip netns exec pia-${container} ip a"
+#
+#ip netns exec pia-${container} ip a
+#
+#
+#echo -e "\nForking container traffic and default route to \"pia\" interface : 
+#ip netns exec pia-${container} wg set pia fwmark $WGRT
+#ip netns exec pia-${container} ip -4 route add 0.0.0.0/0 dev pia table $WGRT
+#ip netns exec pia-${container} ip -4 rule add not fwmark $WGRT table $WGRT
+#ip netns exec pia-${container} sysctl -q net.ipv4.conf.all.src_valid_mark=1"
+#
+#ip netns exec pia-${container} wg set pia fwmark $WGRT
+#ip netns exec pia-${container} ip -4 route add 0.0.0.0/0 dev pia table $WGRT
+#ip netns exec pia-${container} ip -4 rule add not fwmark $WGRT table $WGRT
+#ip netns exec pia-${container} sysctl -q net.ipv4.conf.all.src_valid_mark=1
+#
+# NBA END OF COMMENTED CONF 
+
+# NBA : applying firewall & routing rules 
+
+${0/`basename $0`/}/rt-nft-ns ${container} 
+
+
+echo -e "\n${GREEN}The WireGuard interface got started in namespace pia-${container}${NC}
+
+At this point, internet in pia-${container} should work via VPN for region $region.
+This container has IP $IPv80 and a SOCKSv5 proxy is listening on $IPv80:1080
+Traffic is forked from the SOCKSv5 proxy to PIA WireGuard VPN selected region endpoint      
+\n"
+
+
+
+
+#Old command : 
+#--> ${GREEN}wg-quick down pia${NC} <--
+
+echo -e "To disconnect the VPN, run:
+
+Please run :
+
+--> ${GREEN}${0/`basename $0`/}/pia-wg-down ${container}${NC} <--
+
+"
+
+
+# This section will stop the script if PIA_PF is not set to "true".
+if [ "$PIA_PF" != true ]; then
+  echo If you want to also enable port forwarding, you can start the script:
+  echo -e $ ${GREEN}PIA_TOKEN=$PIA_TOKEN \
+    PF_GATEWAY=$WG_SERVER_IP \
+    PF_HOSTNAME=$WG_HOSTNAME \
+    ./port_forwarding.sh${NC}
+  echo
+  echo The location used must be port forwarding enabled, or this will fail.
+  echo Calling the ./get_region script with PIA_PF=true will provide a filtered list.
+  echo
+  exit 1
+fi
+
+echo -ne "This script got started with ${GREEN}PIA_PF=true${NC}.
+
+Starting port forwarding in "
+for i in {5..1}; do
+  echo -n "$i..."
+  sleep 1
+done
+echo
+echo
+
+echo -e "Starting procedure to enable port forwarding by running the following command:
+$ ${GREEN}PIA_TOKEN=$PIA_TOKEN \\
+  PF_GATEWAY=$WG_SERVER_IP \\
+  PF_HOSTNAME=$WG_HOSTNAME \\
+  ./port_forwarding.sh${NC}"
+
+PIA_TOKEN=$PIA_TOKEN \
+  PF_GATEWAY=$WG_SERVER_IP \
+  PF_HOSTNAME=$WG_HOSTNAME \
+  ./port_forwarding.sh

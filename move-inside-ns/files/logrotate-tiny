@@ -1,0 +1,11 @@
+/var/log/tinyproxy/tinyproxy-pia-nb.log {
+	rotate 31
+	daily
+	compress
+	missingok
+	postrotate
+		ip netns exec pia-nb bash -c 'invoke-rc.d --quiet tinyproxy reload > /dev/null'
+	endscript
+	notifempty
+}
+

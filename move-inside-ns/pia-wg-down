@@ -1,0 +1,103 @@
+#!/bin/bash
+#############################################################################
+##
+##    20211127 : NBA / 14RV-NETWORK : DISCONNECT PIA VPN  
+##
+##
+##        Disconnect PIA VPN connected in specific network namespace
+##
+##        - Disconnect WireGuard from PIA VPN endpoint
+##        - Kill SOCKS, HTTP proxy & DNSMASQ listening on namespace 
+##        - Removing routes from namespace route tables
+##        - Removing container network interfaces
+##        - Removing container specific configuration files
+##        - Removing netns container
+##
+##    Scripts forked by NBA from "privateinternetaccess" git repository:
+##    https://github.com/pia-foss/manual-connections.git
+##
+##    SEE DISCLAMER FILE IN MAIN DIRECTOY     
+##
+#############################################################################
+
+# Main STOP file MOVE INSIDE NETNS CONTAINER IMPLEMENTATION
+
+
+# source variables & functions : var-and-functions-ns
+source ./var-and-functions-ns $1
+
+# testing params
+testparam ${reg}
+
+echo -e "\n${red}Shutdown connection to PIA VPN on container pia-$1\n${norm}"
+
+container=$1
+echo -e "\nContainer = pia-${container} : IP details :\n"
+
+echo -e "${blue}$SUDO ip netns exec pia-${container} ip a${norm}"
+$SUDO ip netns exec pia-${container} ip a
+
+echo -e "\nKilling microsocks socks proxy & tinyproxy :"
+echo -e "${blue}$SUDO ip netns pids pia-${container} |xargs kill -9${norm}"
+$SUDO bash -c "ip netns pids pia-${container} |xargs kill -9"
+
+echo -e "\nDown WireGuard VPN kernel interface :"
+# force remove old symlink to pia_xx.conf
+echo -e "Removing old WireGuard configuration : \n${purpl}$SUDO rm -f /etc/wireguard/pia.conf${norm}"
+$SUDO rm -f /etc/wireguard/pia.conf
+# creating symlink /etc/wireguard/pia.conf to /etc/wireguard/pia_${container}.conf
+echo -e "Creating symlink : \n${purpl}ln -s /etc/wireguard/pia_${container}.conf /etc/wireguard/pia.conf${norm}\n"
+$SUDO ln -s /etc/wireguard/pia_${container}.conf /etc/wireguard/pia.conf
+
+echo -e "${blue}$SUDO ip netns exec pia-${container} ${green}wg-quick down pia${norm}"
+$SUDO ip netns exec pia-${container} wg-quick down pia
+
+echo -e "\nCleaning WireGuard route table and default : [ ${green}OK !${norm} ]"
+# already done by 'wg-quick down pia'
+
+echo -e "\nCleaning pia-${container} default route table :"
+echo -e "${blue}$SUDO ip netns exec pia-${container} ip route del default via $GWv90 dev pia-${container}90${norm}" 
+$SUDO ip netns exec pia-${container} ip route del default via $GWv90 dev pia-${container}90
+
+echo -e "\nCleaning pia-${container} delete interfaces :"
+echo -e "${blue}$SUDO ip netns exec pia-${container} ip link set pia-${container}80 down
+$SUDO ip netns exec pia-${container} ip link set pia-${container}90 down
+$SUDO ip netns exec pia-${container} ip link del pia-${container}80 
+$SUDO ip netns exec pia-${container} ip link del pia-${container}90${norm}"
+$SUDO ip netns exec pia-${container} ip link set pia-${container}80 down
+$SUDO ip netns exec pia-${container} ip link set pia-${container}90 down
+$SUDO ip netns exec pia-${container} ip link del pia-${container}80 
+$SUDO ip netns exec pia-${container} ip link del pia-${container}90 
+
+echo -e "\nDeleting network namespace container pia-${container} :"
+echo -e "${blue}$SUDO ip netns del pia-${container}${norm}"
+$SUDO ip netns del pia-${container}
+
+echo -e "\nListing container :"
+echo -e "${blue}$SUDO ip netns list${norm}\n"
+$SUDO ip netns list
+
+echo -e "\nRemoving pia-$container specific namespaces files
+${blue}$SUDO rm -f /etc/netns/pia-${container}/resolv.conf
+$SUDO rm -f /etc/netns/pia-${container}/hostname
+$SUDO rm -f /var/run/tinyproxy/tinyproxy-pia-${container}.pid
+$SUDO rm -rf /etc/netns/pia-${container}/tinyproxy
+$SUDO rmdir /etc/netns/pia-${container}
+${norm}"
+$SUDO rm -f /etc/netns/pia-${container}/resolv.conf
+$SUDO rm -f /etc/netns/pia-${container}/hostname
+$SUDO rm -f /var/run/tinyproxy/tinyproxy-pia-${container}.pid
+$SUDO rm -rf /etc/netns/pia-${container}/tinyproxy
+$SUDO rmdir /etc/netns/pia-${container}
+
+echo -e "\nMain container network detail :"
+echo -e "${blue}$SUDO ip a${norm}\n"
+$SUDO ip a
+
+echo -e "\nVPN : ${RED}DOWN${norm}"
+echo -e "CONTAINER ${green}pia-${container}${norm} : ${RED}PURGED & REMOVED${norm}"
+
+
+echo -e "\n${green}PIA VPN in container pia-${container} DOWN\n${norm}" && exit 30
+
+

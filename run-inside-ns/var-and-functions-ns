@@ -1,0 +1,230 @@
+#!/bin/bash
+#############################################################################
+##
+##    20211127 : NBA / 14RV-NETWORK : CONNECT PIA VPN
+##
+##
+##        Connect PIA VPN to 9 differents pre-defined Regions :
+##
+##        - from the same Linux instance  
+##        - in différent network namespaces (netns)
+##        - using WireGuard to connect PIA (out by DMZ-ext v90)
+##          
+##        - EXPOSE VPN to local network (in by DMZ-int v80)
+##        - It is possible to ROUTE traffic through container IP 
+##        - using the SOCKSv5 & HTTP(S) proxy :  
+##        - Traffic input in SOCKS5/HTTP out by PIA VPN of selected region
+##        - SOCKS5 listening on namespace container IP:1080
+##        - HTTP(S) listening on namespace container IP:3128
+##        
+##        - 9 predifined Region / update manually to select other regions
+##        - To get a list of possible region, please run as root :	
+##        - ${PWD##*/}/lst-reg
+##        
+##        - 10 different possible connections in standard PIA paid contract 
+##        - Keeping 1 connection for testing or for direct use
+##        - on device like laptop, tab, phone ... 
+##        - If you need more free connection, do not connect the 9 
+##        - predifined regions, only connect 8 or 7 or less ..; 
+##        
+##    Scripts forked by NBA from "privateinternetaccess" git repository: 
+##    https://github.com/pia-foss/manual-connections.git    
+##
+##
+#############################################################################
+
+# This file contains variable & functions sources by other scripts 
+# like pia-wg-up/ pia-wg-down
+
+# export 
+
+export PATH=$PATH:.
+
+
+# variables script
+
+red='\033[31m'
+RED='\033[01;31m'
+blue='\033[34m'
+GREEN='\033[01;32m'
+green='\033[32m'
+purpl='\033[35m'
+norm='\033[00m'
+
+
+# variable pia
+
+VPN_PROTOCOL="wireguard "
+DISABLE_IPV6="yes"
+AUTOCONNECT="false"
+PIA_PF="false"
+PIA_USER="p0123456"
+PIA_PASS="pXXXXXXX"
+MAX_LATENCY="0.05"
+
+# variable pia region
+uk="uk"
+fi="fi"
+se="se"
+us="us"
+za="za"
+br="br"
+jp="jp"
+au="au"
+nz="nz"
+nb="nb"
+
+# variables server / network
+
+# variable IP container
+IPuk80="10.0.80.141"
+IPfi80="10.0.80.142"
+IPse80="10.0.80.143"
+IPus80="10.0.80.144"
+IPza80="10.0.80.145"
+IPbr80="10.0.80.146"
+IPjp80="10.0.80.147"
+IPau80="10.0.80.148"
+IPnz80="10.0.80.149"
+
+IPuk90="10.0.90.141"
+IPfi90="10.0.90.142"
+IPse90="10.0.90.143"
+IPus90="10.0.90.144"
+IPza90="10.0.90.145"
+IPbr90="10.0.90.146"
+IPjp90="10.0.90.147"
+IPau90="10.0.90.148"
+IPnz90="10.0.90.149"
+
+
+# Server interfaces
+
+# Change to macvlan if you want to do ip routing through the container
+# Physical interface need to be in promiscious mode for macvlan to work !
+#IFtype="macvlan"
+IFtype="ipvlan"
+#
+IFphy="enp0s3"
+IFv80="enp0s3.80"
+IFv90="enp0s3.90"
+# Networks : DMZ-int DMZ-ext LAN WLAN VPN
+GWv80="10.0.80.250"
+GWv90="10.0.90.250"
+v20="10.0.20.0/24"
+v30="10.0.30.0/24"
+v80="10.0.80.0/24"
+v90="10.0.90.0/24"
+v110="10.0.110.0/24"
+# DNS
+DNSdmz80="10.0.80.250"
+DNSdmz90="10.0.90.250"
+DNSpia01="10.0.0.241"
+DNSpia02="10.0.0.242"
+DNSpia03="10.0.0.243"
+DNSpia04="10.0.0.244"
+TLDlocal="lan"
+# WireGuard route table :
+#WireGuardRouteTable="51820"
+WGRT="51820"
+# MTU :
+MTU="1420"
+# sudo
+SUDO="/usr/bin/sudo"
+# region
+reg=$1
+
+
+
+
+
+
+# intro
+intropia (){
+echo -e "\n${red}Starting connection to PIA VPN on container ${norm}${GREEN}pia-$1\n${norm}"
+
+echo -e "\n${blue}This will create a network namespace called pia-$1 with it's own IP 
+on DMZ-int (v80) and DMZ-ext (v90) and it's own default gateway in order
+to connect PirvateInternetAccess commercial VPN services.
+
+PirvateInternetAccess service provide 10 concurrents access by default in 
+it's standard offre, a bandwidth of ~200Mb/s per account, and a WireGuard 
+access to more than 75 different regions / countries with good latency.
+
+The idea here is to propose a multi-hope VPN access to the local network 
+(access from local network by DMZ-int v80) with PIA VPN connected between 
+1 to 9 differents predifined region from a single VM instance which have 
+only 2 vlan network interfaces, one on DMZ-int (v80) and the other on 
+DMZ-ext (v90). 
+This is the standard design on my network where v90 expose DMZ services on 
+internet and v80 expose DMZ services to all vlans of the local network. 
+
+This script will create a new network namespace container and will 
+connect PIA services using WireGuard 
+
+PIA (PirvateInternetAccess) VPN will be connected inside the container 
+using a WireGuard interface, and this WireGuard interface will become 
+the container default gateway.
+
+A SOCKSv5 proxy is listening on the container IP:1080 on vlan 80 and 
+is able to forward traffic to the PIA connected region in the container
+An HTTP(S) proxy is listening on the container and IP:3128 
+on vlan 80 and is able to forward traffic to the PIA connected region in 
+the container
+
+
+
+${norm}${green}Container is : pia-$1${norm}
+\n${norm}"
+}
+
+# find server location
+srvloc () {
+echo -e "\n${green}To find new server location in order to update this script, please run as root${norm} 
+${blue}${0/`basename $0`/}lst-reg${norm}\n"
+}
+
+# test user: should only allow script to run as
+testuser() {
+if [ "$(whoami)" != "root" ]; then
+  echo -e "\n${red}This script needs to be run as root. Try again with${norm}${RED} 'sudo $0'\n${norm}"
+  exit 25
+fi
+}
+
+# test param
+
+testparam(){
+[[ "$#" -ne 1 ]] && echo -e "\nERROR: $0 need an argument:\n$0 <region>" && echo -e "\nERROR: ${red}\"<region>\"${norm} must be one of : ${blue}\"$uk\" \"$fi\" \"$se\" \"$us\" \"$za\" \"$br\" \"$jp\" \"$au\" \"$nz\" \n${norm}" && exit 27;
+
+[[ "$1" != "$uk" && "$1" != "$fi" && "$1" != "$se" && "$1" != "$us" && "$1" != "$za" && "$1" != "$br" && "$1" != "$jp" && "$1" != "$au" && "$1" != "$nz" ]] && echo -e "\nERROR: ${red}\"<region>\"${norm} must be one of : ${blue}\"$uk\" \"$fi\" \"$se\" \"$us\" \"$za\" \"$br\" \"$jp\" \"$au\" \"$nz\" \n${norm}" && exit 27;
+}
+
+
+
+# init variables
+
+
+initvar() {
+[[ "$reg" == "$uk" ]] && IPv80=$IPuk80 && IPv90=$IPuk90 && container="$uk" && region=uk_2
+[[ "$reg" == "$fi" ]] && IPv80=$IPfi80 && IPv90=$IPfi90 && container="$fi" && region=fi
+[[ "$reg" == "$se" ]] && IPv80=$IPse80 && IPv90=$IPse90 && container="$se" && region=sweden
+[[ "$reg" == "$us" ]] && IPv80=$IPus80 && IPv90=$IPus90 && container="$us" && region=us-newjersey
+[[ "$reg" == "$za" ]] && IPv80=$IPza80 && IPv90=$IPza90 && container="$za" && region=za
+[[ "$reg" == "$br" ]] && IPv80=$IPbr80 && IPv90=$IPbr90 && container="$br" && region=br
+[[ "$reg" == "$jp" ]] && IPv80=$IPjp80 && IPv90=$IPjp90 && container="$jp" && region=japan
+[[ "$reg" == "$au" ]] && IPv80=$IPau80 && IPv90=$IPau90 && container="$au" && region=aus
+[[ "$reg" == "$nz" ]] && IPv80=$IPnz80 && IPv90=$IPnz90 && container="$nz" && region=nz
+
+# example changing servers in region: run ./lst-reg to get a list 
+#[[ "$reg" == "$us" ]] && IPv80=$IPus80 && IPv90=$IPus90 && container="$us" && region=us-streaming
+#[[ "$reg" == "$us" ]] && IPv80=$IPus80 && IPv90=$IPus90 && container="$us" && region=us_new_york_city
+#[[ "$reg" == "$us" ]] && IPv80=$IPus80 && IPv90=$IPus90 && container="$us" && region=us_seattle
+
+PREFERRED_REGION=$region
+
+# init container interface type
+[[ "$IFtype" == "macvlan" ]] && IFv80=$IFphy && IFv90=$IFphy && IFmode=bridge
+[[ "$IFtype" == "ipvlan"  ]] && IFv80=$IFv80 && IFv90=$IFv90 && IFmode=l2
+}
+
