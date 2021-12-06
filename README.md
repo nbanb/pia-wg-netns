@@ -9,7 +9,7 @@ Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Li
 ##        Connect PIA VPN to 9 differents pre-defined Regions :
 ##
 ##        - from the same Linux instance  
-##        - in diffÃ©rent network namespaces (netns)
+##        - in different network namespaces (netns)
 ##        - using WireGuard to connect PIA (out by DMZ-ext v90)
 ##          
 ##        - EXPOSE VPN to local network (in by DMZ-int v80)
