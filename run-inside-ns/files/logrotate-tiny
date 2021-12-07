@@ -4,7 +4,7 @@
 	compress
 	missingok
 	postrotate
-		ip netns exec pia-nb bash -c 'invoke-rc.d --quiet tinyproxy reload > /dev/null'
+		sudo ip netns exec pia-nb bash -c 'invoke-rc.d --quiet tinyproxy reload > /dev/null'
 	endscript
 	notifempty
 }
