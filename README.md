@@ -1,6 +1,6 @@
 # pia-wg-netns
 Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Linux netns namespaces
-
+```bash
 #############################################################################
 ##
 ##    20211202 : NBA / 14RV-NETWORK : CONNECT PIA VPN
@@ -36,7 +36,7 @@ Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Li
 ##    SEE DISCLAMER FILE IN MAIN DIRECTOY 
 ##
 #############################################################################
-
+```
 
 DATE of initial release : 2021-12-02
 
@@ -44,18 +44,19 @@ DATE of initial release : 2021-12-02
 _____________________________________________________
 Working files and differents implementations are in : 
 
+```bash
 nba-ns/
 nba-ns/nsip
 nba-ns/srv-list-20211127
 nba-ns/run-inside-ns/
 nba-ns/move-inside-ns/
-
+```
 _______________________
 Implementation are in:
-
+```bash
 nba-ns/run-inside-ns
 nba-ns/move-inside-ns
-
+```
 ________________
 Also include :
 
@@ -81,18 +82,22 @@ Two implementation of multi head VPN connection from PIA commercial service :
 You can launch multi instances of the PIA VPN on the same machine using this script.
 his script had been designed on a VM machine having 2 vlan networks interface, one on vlan 80 and another
 on vlan 90 : vlan 80 is internal DMZ (DMZ-int) and vlan 90 in external DMZ exposed to internet (DMZ-ext)
+
 This VM access internet through vlan 90 (and internet access it through vlan 90 too), and all local networks which are allowed to access this machine access it through internal DMZ: vlan 80. 
+
 To summerize the architecture, this machine is exposed to local network on vlan 80 and is exposed to 
 internet on vlan 90 and its default gateway is on vlan 90 :
 
 ______________
 Quick scheme:
-
+```bash
   @ <-----> Firewall <----DMZ-ext-v90----> VM <----DMZ-int-v80----> Firewall <---- Local-net-v20,30,...
-
+```
 
 
 To expose all PIA VPN connections to your local network, you can do routing through each container (change 'ipvlan' by 'macvlan' in 'var-and-functions-ns' script, need promiscious mode on the physical network interface) with Policy Based Routing rules from your router or firewall or easier, you car redirect traffic on each container SOCKSv5 proxy. There is also an HTTP(S) proxy listening in each container on port 8080 and port 3128.
+
+
 You can access all differents namespaces through a socks proxy listening on port 1080 (IP:1080) or using the HTTP proxy on each instance of the PIA VPN you launch so you can do conditionnal routing & proxying from your local network.
 (easy to use)
 
@@ -101,7 +106,7 @@ So you need to install both microsock and tinyproxy on the system you will deplo
 
 ____________________________
 Required external packages :
-
+```bash
 - cURL
 - jq
 - wg-quick 
@@ -109,11 +114,12 @@ Required external packages :
 - microsocks
 - tinyproxy
 - logrotate
-
+```
 On debian, you can easyly install all theses packages using apt command :
+```bash
 apt update
 apt install curl jq wireguard wireguard-dkms wireguard-tools microsocks tinyproxy
-
+```
 
 
 
@@ -139,7 +145,7 @@ It had been developped first to test WireGuard namespaces features and is mainta
 futurs fork using all cool isolations features WireGuard and Linux netns namespaces provides.
 
 Files :
-
+```bash
 nba-ns/move-inside-ns/ca.rsa.4096.crt
 nba-ns/move-inside-ns/get_region-ns
 nba-ns/move-inside-ns/get_token.sh
@@ -157,7 +163,7 @@ nba-ns/move-inside-ns/files/default.html
 nba-ns/move-inside-ns/files/stats.html
 nba-ns/move-inside-ns/files/logrotate-tiny
 nba-ns/move-inside-ns/files/tinyproxy-pia-nb.conf
-
+```
 
 
 ========================
@@ -177,7 +183,7 @@ machine, this is the best implementation for you.
 
 
 Files : 
-
+```bash
 nba-ns/run-inside-ns/ca.rsa.4096.crt
 nba-ns/run-inside-ns/get_region-ns
 nba-ns/run-inside-ns/get_token.sh
@@ -195,7 +201,7 @@ nba-ns/run-inside-ns/files/default.html
 nba-ns/run-inside-ns/files/stats.html
 nba-ns/run-inside-ns/files/logrotate-tiny
 nba-ns/run-inside-ns/files/tinyproxy-pia-nb.conf
-
+```
 
 
 _________________________
