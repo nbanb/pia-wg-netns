@@ -167,17 +167,20 @@ nba-ns/move-inside-ns/files/tinyproxy-pia-nb.conf
 
 
 ========================
-Second implementation : 
+- Second implementation : 
 
 ________________________________________________
  WireGuard created directly in " namespace :
 
 This "nba" implementation create namespaces for each VPN region (predifined & update-able in script) and 
 launch WireGuard in a Linux netns container.
+
 So in this mode, each container become the WireGuard root container and hold the WireGuard socket.
 This mode is better for multihead PIA VPN instance where you use them as is.
+
 If you want to benefit from WireGuard cool features using Linux netns namespaces, you will prefer to use 
 the first described mode.
+
 If you just want to use and fork traffic conditionnaly through the 9 predifined location from the same 
 machine, this is the best implementation for you.
 
@@ -209,6 +212,7 @@ Change predifined regions
 
 To update script to change the 9 predifined region, you can have a list of PIA regions / servers which
 have less than 0.5s of latency (most of the world, if not all the world !) when running 'lst-reg' script
+
 The scripts had been designed for you just need to update a few lines in 'pia-wg-up' and 'pia-wg-down' 
 scripts to change regions and output.
 
