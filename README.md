@@ -33,13 +33,17 @@ Multihead implementation of PIA (PrivateInternetAccess) using WireGuard &amp; Li
 ##    Scripts forked by NBA from "privateinternetaccess" git repository: 
 ##    https://github.com/pia-foss/manual-connections.git    
 ##
-##    SEE DISCLAMER FILE IN MAIN DIRECTOY 
+##    SEE DISCLAMER FILE IN MAIN DIRECTORY 
 ##
 #############################################################################
 ```
 
 DATE of initial release : 2021-12-02
 
+Download the whole project : 
+```bash
+git clone https://github.com/nbanb/pia-wg-netns.git
+```
 
 _____________________________________________________
 Working files and differents implementations are in : 
